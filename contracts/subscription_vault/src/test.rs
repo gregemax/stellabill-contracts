@@ -1,4 +1,4 @@
-use crate::{Error, Subscription, SubscriptionStatus, SubscriptionVault, SubscriptionVaultClient};
+use crate::{Error, MerchantConfig, Subscription, SubscriptionStatus, SubscriptionVault, SubscriptionVaultClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token, Address, Env};
 
@@ -168,6 +168,87 @@ fn test_create_subscription_zero_interval_fails() {
 
     let result = client.try_create_subscription(&ctx.subscriber, &merchant, &amount, &0u64, &false);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_get_merchant_config_returns_defaults_when_unset() {
+    let ctx = TestCtx::new();
+    let client = ctx.client();
+    let merchant = Address::generate(&ctx.env);
+
+    let config = client.get_merchant_config(&merchant);
+    assert_eq!(
+        config,
+        MerchantConfig {
+            version: 1,
+            min_subscription_amount: 0,
+            default_interval_seconds: 0,
+        }
+    );
+}
+
+#[test]
+fn test_set_merchant_config_by_merchant_and_apply_defaults_on_create() {
+    let ctx = TestCtx::new();
+    let client = ctx.client();
+    let merchant = Address::generate(&ctx.env);
+    let subscriber = Address::generate(&ctx.env);
+    ctx.mint_to(&subscriber, 30_000000i128);
+
+    client.set_merchant_config(&merchant, &merchant, &5_000000i128, &7200u64);
+    let stored = client.get_merchant_config(&merchant);
+    assert_eq!(stored.min_subscription_amount, 5_000000i128);
+    assert_eq!(stored.default_interval_seconds, 7200u64);
+
+    ctx.approve_vault_spend(&subscriber, 6_000000i128);
+    let sub_id = client.create_subscription(&subscriber, &merchant, &6_000000i128, &0u64, &false);
+    let sub = client.get_subscription(&sub_id);
+    assert_eq!(sub.interval_seconds, 7200u64);
+
+    ctx.approve_vault_spend(&subscriber, 4_000000i128);
+    let below_min =
+        client.try_create_subscription(&subscriber, &merchant, &4_000000i128, &0u64, &false);
+    assert_eq!(below_min, Err(Ok(Error::BelowMerchantMinimum)));
+}
+
+#[test]
+fn test_set_and_update_merchant_config_by_admin_over_time() {
+    let ctx = TestCtx::new();
+    let client = ctx.client();
+    let merchant = Address::generate(&ctx.env);
+    let subscriber = Address::generate(&ctx.env);
+    ctx.mint_to(&subscriber, 50_000000i128);
+
+    client.set_merchant_config(&ctx.admin, &merchant, &3_000000i128, &3600u64);
+    let first = client.get_merchant_config(&merchant);
+    assert_eq!(first.min_subscription_amount, 3_000000i128);
+    assert_eq!(first.default_interval_seconds, 3600u64);
+
+    client.update_merchant_config(&ctx.admin, &merchant, &None, &Some(1800u64));
+    let updated = client.get_merchant_config(&merchant);
+    assert_eq!(updated.min_subscription_amount, 3_000000i128);
+    assert_eq!(updated.default_interval_seconds, 1800u64);
+
+    ctx.approve_vault_spend(&subscriber, 3_500000i128);
+    let sub_id = client.create_subscription(&subscriber, &merchant, &3_500000i128, &0u64, &false);
+    assert_eq!(client.get_subscription(&sub_id).interval_seconds, 1800u64);
+}
+
+#[test]
+fn test_merchant_config_unauthorized_and_invalid_update_failures() {
+    let ctx = TestCtx::new();
+    let client = ctx.client();
+    let merchant = Address::generate(&ctx.env);
+    let attacker = Address::generate(&ctx.env);
+
+    let unauthorized_set =
+        client.try_set_merchant_config(&attacker, &merchant, &1_000000i128, &3600u64);
+    assert_eq!(unauthorized_set, Err(Ok(Error::Unauthorized)));
+
+    client.set_merchant_config(&merchant, &merchant, &1_000000i128, &3600u64);
+    let bad_update =
+        client.try_update_merchant_config(&merchant, &merchant, &Some(-1i128), &None);
+    assert_eq!(bad_update, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]

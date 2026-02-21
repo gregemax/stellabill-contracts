@@ -15,12 +15,25 @@ pub enum Error {
     InsufficientBalance = 407,
     InvalidStatus = 408,
     ArithmeticOverflow = 409,
+    BelowMerchantMinimum = 410,
 }
 
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum DataKey {
     MerchantBalance(Address),
+    MerchantConfig(Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MerchantConfig {
+    /// Schema version for future compatible config expansion.
+    pub version: u32,
+    /// Minimum subscription amount accepted for this merchant (0 = no merchant-specific minimum).
+    pub min_subscription_amount: i128,
+    /// Default interval used when `create_subscription` is called with interval `0`.
+    pub default_interval_seconds: u64,
 }
 
 #[contracttype]
@@ -92,6 +105,55 @@ impl SubscriptionVault {
         env.storage().instance().get(&Symbol::new(&env, "min_topup")).ok_or(Error::NotFound)
     }
 
+    /// Set full merchant configuration. Callable by the merchant or contract admin.
+    pub fn set_merchant_config(
+        env: Env,
+        actor: Address,
+        merchant: Address,
+        min_subscription_amount: i128,
+        default_interval_seconds: u64,
+    ) -> Result<(), Error> {
+        if min_subscription_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        Self::require_admin_or_merchant(&env, &actor, &merchant)?;
+        let config = MerchantConfig {
+            version: 1,
+            min_subscription_amount,
+            default_interval_seconds,
+        };
+        Self::write_merchant_config(&env, &merchant, &config);
+        Ok(())
+    }
+
+    /// Update merchant configuration fields. Any `None` field keeps its current value.
+    pub fn update_merchant_config(
+        env: Env,
+        actor: Address,
+        merchant: Address,
+        min_subscription_amount: Option<i128>,
+        default_interval_seconds: Option<u64>,
+    ) -> Result<(), Error> {
+        Self::require_admin_or_merchant(&env, &actor, &merchant)?;
+        let mut current = Self::read_merchant_config(&env, &merchant);
+        if let Some(min) = min_subscription_amount {
+            if min < 0 {
+                return Err(Error::InvalidAmount);
+            }
+            current.min_subscription_amount = min;
+        }
+        if let Some(default_interval) = default_interval_seconds {
+            current.default_interval_seconds = default_interval;
+        }
+        Self::write_merchant_config(&env, &merchant, &current);
+        Ok(())
+    }
+
+    /// Return merchant configuration. If unset, returns default config values.
+    pub fn get_merchant_config(env: Env, merchant: Address) -> Result<MerchantConfig, Error> {
+        Ok(Self::read_merchant_config(&env, &merchant))
+    }
+
     /// Create a new subscription and pull initial prepaid funds into the vault.
     ///
     /// `amount` is both the recurring charge amount and the required initial prepaid deposit.
@@ -105,9 +167,23 @@ impl SubscriptionVault {
         usage_enabled: bool,
     ) -> Result<u32, Error> {
         subscriber.require_auth();
-        if amount <= 0 || interval_seconds == 0 {
+        if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        let merchant_config = Self::read_merchant_config(&env, &merchant);
+        if merchant_config.min_subscription_amount > 0
+            && amount < merchant_config.min_subscription_amount
+        {
+            return Err(Error::BelowMerchantMinimum);
+        }
+        let effective_interval_seconds = if interval_seconds == 0 {
+            if merchant_config.default_interval_seconds == 0 {
+                return Err(Error::InvalidAmount);
+            }
+            merchant_config.default_interval_seconds
+        } else {
+            interval_seconds
+        };
 
         let token_address: Address = env
             .storage()
@@ -133,7 +209,7 @@ impl SubscriptionVault {
             subscriber: subscriber.clone(),
             merchant,
             amount,
-            interval_seconds,
+            interval_seconds: effective_interval_seconds,
             last_payment_timestamp: now,
             status: SubscriptionStatus::Active,
             prepaid_balance: amount,
@@ -302,6 +378,36 @@ impl SubscriptionVault {
         env.storage()
             .instance()
             .set(&DataKey::MerchantBalance(merchant.clone()), &balance);
+    }
+
+    fn read_merchant_config(env: &Env, merchant: &Address) -> MerchantConfig {
+        env.storage()
+            .instance()
+            .get(&DataKey::MerchantConfig(merchant.clone()))
+            .unwrap_or(MerchantConfig {
+                version: 1,
+                min_subscription_amount: 0,
+                default_interval_seconds: 0,
+            })
+    }
+
+    fn write_merchant_config(env: &Env, merchant: &Address, config: &MerchantConfig) {
+        env.storage()
+            .instance()
+            .set(&DataKey::MerchantConfig(merchant.clone()), config);
+    }
+
+    fn require_admin_or_merchant(env: &Env, actor: &Address, merchant: &Address) -> Result<(), Error> {
+        actor.require_auth();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, "admin"))
+            .ok_or(Error::NotFound)?;
+        if actor != merchant && actor != &admin {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
     }
 }
 
