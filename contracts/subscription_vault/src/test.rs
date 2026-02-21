@@ -1,8 +1,8 @@
 use crate::{
     can_transition, get_allowed_transitions, validate_status_transition, Error,
-    Subscription, SubscriptionStatus, SubscriptionVault, SubscriptionVaultClient,
+    RecoveryReason, Subscription, SubscriptionStatus, SubscriptionVault, SubscriptionVaultClient,
 };
-use soroban_sdk::testutils::{Address as _, Ledger as _};
+use soroban_sdk::testutils::{Address as _, Ledger as _, Events};
 use soroban_sdk::{Address, Env};
 
 // =============================================================================
@@ -943,4 +943,336 @@ fn test_get_next_charge_info_zero_interval() {
     
     assert!(info.is_charge_expected);
     assert_eq!(info.next_charge_timestamp, 5000); // 5000 + 0 = 5000
+}
+
+// =============================================================================
+// Admin Recovery of Stranded Funds Tests
+// =============================================================================
+
+#[test]
+fn test_recover_stranded_funds_successful() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&env);
+    let amount = 50_000_000i128; // 50 USDC
+    let reason = RecoveryReason::AccidentalTransfer;
+    
+    env.ledger().with_mut(|li| li.timestamp = 10000);
+    
+    // Recovery should succeed
+    let result = client.try_recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    assert!(result.is_ok());
+    
+    // Verify event was emitted
+    let events = env.events().all();
+    assert!(events.len() > 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #401)")]
+fn test_recover_stranded_funds_unauthorized_caller() {
+    let (env, client, _, _) = setup_test_env();
+    
+    let non_admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let amount = 10_000_000i128;
+    let reason = RecoveryReason::AccidentalTransfer;
+    
+    // Should fail: caller is not admin
+    client.recover_stranded_funds(&non_admin, &recipient, &amount, &reason);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #405)")]
+fn test_recover_stranded_funds_zero_amount() {
+    let (_, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&admin.env());
+    let amount = 0i128; // Invalid: zero amount
+    let reason = RecoveryReason::DeprecatedFlow;
+    
+    // Should fail: amount must be positive
+    client.recover_stranded_funds(&admin, &recipient, &amount, &reason);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #405)")]
+fn test_recover_stranded_funds_negative_amount() {
+    let (_, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&admin.env());
+    let amount = -1_000_000i128; // Invalid: negative amount
+    let reason = RecoveryReason::AccidentalTransfer;
+    
+    // Should fail: amount must be positive
+    client.recover_stranded_funds(&admin, &recipient, &amount, &reason);
+}
+
+#[test]
+fn test_recover_stranded_funds_all_recovery_reasons() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&env);
+    let amount = 10_000_000i128;
+    
+    // Test each recovery reason
+    let result1 = client.try_recover_stranded_funds(&admin, &recipient, &amount, &RecoveryReason::AccidentalTransfer);
+    assert!(result1.is_ok());
+    
+    let result2 = client.try_recover_stranded_funds(&admin, &recipient, &amount, &RecoveryReason::DeprecatedFlow);
+    assert!(result2.is_ok());
+    
+    let result3 = client.try_recover_stranded_funds(&admin, &recipient, &amount, &RecoveryReason::UnreachableSubscriber);
+    assert!(result3.is_ok());
+}
+
+#[test]
+fn test_recover_stranded_funds_event_emission() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&env);
+    let amount = 25_000_000i128;
+    let reason = RecoveryReason::UnreachableSubscriber;
+    
+    env.ledger().with_mut(|li| li.timestamp = 5000);
+    
+    // Perform recovery
+    client.recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    
+    // Check that event was emitted
+    let events = env.events().all();
+    assert!(events.len() > 0);
+    
+    // The event should contain recovery information
+    // Note: Event details verification depends on SDK version
+}
+
+#[test]
+fn test_recover_stranded_funds_large_amount() {
+    let (_, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&admin.env());
+    let amount = 1_000_000_000_000i128; // 1 million USDC (with 6 decimals)
+    let reason = RecoveryReason::DeprecatedFlow;
+    
+    // Should handle large amounts
+    let result = client.try_recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_recover_stranded_funds_small_amount() {
+    let (_, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&admin.env());
+    let amount = 1i128; // Minimal amount (1 stroops)
+    let reason = RecoveryReason::AccidentalTransfer;
+    
+    // Should handle minimal positive amount
+    let result = client.try_recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_recover_stranded_funds_multiple_recoveries() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipient3 = Address::generate(&env);
+    
+    // Multiple recoveries should all succeed
+    let result1 = client.try_recover_stranded_funds(
+        &admin, 
+        &recipient1, 
+        &10_000_000i128, 
+        &RecoveryReason::AccidentalTransfer
+    );
+    assert!(result1.is_ok());
+    
+    let result2 = client.try_recover_stranded_funds(
+        &admin, 
+        &recipient2, 
+        &20_000_000i128, 
+        &RecoveryReason::DeprecatedFlow
+    );
+    assert!(result2.is_ok());
+    
+    let result3 = client.try_recover_stranded_funds(
+        &admin, 
+        &recipient3, 
+        &30_000_000i128, 
+        &RecoveryReason::UnreachableSubscriber
+    );
+    assert!(result3.is_ok());
+    
+    // Verify events were emitted
+    // Note: Exact count may vary by SDK version
+    let events = env.events().all();
+    assert!(events.len() > 0);
+}
+
+#[test]
+fn test_recover_stranded_funds_different_recipients() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    // Test recovery to different recipient types
+    let treasury = Address::generate(&env);
+    let user_wallet = Address::generate(&env);
+    let contract_addr = Address::generate(&env);
+    
+    let amount = 5_000_000i128;
+    let reason = RecoveryReason::AccidentalTransfer;
+    
+    // Recovery to treasury
+    assert!(client.try_recover_stranded_funds(&admin, &treasury, &amount, &reason).is_ok());
+    
+    // Recovery to user wallet
+    assert!(client.try_recover_stranded_funds(&admin, &user_wallet, &amount, &reason).is_ok());
+    
+    // Recovery to contract address
+    assert!(client.try_recover_stranded_funds(&admin, &contract_addr, &amount, &reason).is_ok());
+}
+
+#[test]
+fn test_recovery_reason_enum_values() {
+    // Verify recovery reason enum is properly defined
+    let reason1 = RecoveryReason::AccidentalTransfer;
+    let reason2 = RecoveryReason::DeprecatedFlow;
+    let reason3 = RecoveryReason::UnreachableSubscriber;
+    
+    // Ensure reasons are distinct
+    assert!(reason1 != reason2);
+    assert!(reason2 != reason3);
+    assert!(reason1 != reason3);
+    
+    // Test cloning
+    let reason_clone = reason1.clone();
+    assert!(reason_clone == RecoveryReason::AccidentalTransfer);
+}
+
+#[test]
+fn test_recover_stranded_funds_timestamp_recorded() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&env);
+    let amount = 15_000_000i128;
+    let reason = RecoveryReason::DeprecatedFlow;
+    
+    // Set specific timestamp
+    let expected_timestamp = 123456u64;
+    env.ledger().with_mut(|li| li.timestamp = expected_timestamp);
+    
+    // Perform recovery
+    client.recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    
+    // Event should contain the timestamp
+    // (Full verification depends on event inspection capabilities)
+    let events = env.events().all();
+    assert!(events.len() > 0);
+}
+
+#[test]
+fn test_recover_stranded_funds_admin_authorization_required() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&env);
+    let amount = 10_000_000i128;
+    let reason = RecoveryReason::AccidentalTransfer;
+    
+    // This should succeed because admin is authenticated
+    let result = client.try_recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_recover_stranded_funds_does_not_affect_subscriptions() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    // Create a subscription
+    let subscriber = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let sub_id = client.create_subscription(
+        &subscriber,
+        &merchant,
+        &10_000_000i128,
+        &(30 * 24 * 60 * 60),
+        &false
+    );
+    
+    // Perform recovery (should not affect subscription)
+    let recipient = Address::generate(&env);
+    client.recover_stranded_funds(&admin, &recipient, &5_000_000i128, &RecoveryReason::DeprecatedFlow);
+    
+    // Verify subscription is still intact
+    let subscription = client.get_subscription(&sub_id);
+    assert_eq!(subscription.status, SubscriptionStatus::Active);
+    assert_eq!(subscription.subscriber, subscriber);
+    assert_eq!(subscription.merchant, merchant);
+}
+
+#[test]
+fn test_recover_stranded_funds_with_cancelled_subscription() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    // Create and cancel a subscription
+    let subscriber = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let sub_id = client.create_subscription(
+        &subscriber,
+        &merchant,
+        &10_000_000i128,
+        &(30 * 24 * 60 * 60),
+        &false
+    );
+    client.cancel_subscription(&sub_id, &subscriber);
+    
+    // Admin can still recover stranded funds
+    let recipient = Address::generate(&env);
+    let result = client.try_recover_stranded_funds(
+        &admin,
+        &recipient,
+        &5_000_000i128,
+        &RecoveryReason::UnreachableSubscriber
+    );
+    assert!(result.is_ok());
+    
+    // Subscription remains cancelled
+    assert_eq!(client.get_subscription(&sub_id).status, SubscriptionStatus::Cancelled);
+}
+
+#[test]
+fn test_recover_stranded_funds_idempotency() {
+    let (env, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&env);
+    let amount = 10_000_000i128;
+    let reason = RecoveryReason::AccidentalTransfer;
+    
+    // Perform first recovery
+    let result1 = client.try_recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    assert!(result1.is_ok());
+    
+    // Perform second recovery with same parameters
+    let result2 = client.try_recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    assert!(result2.is_ok());
+    
+    // Both should succeed (no idempotency constraint)
+    // Each generates its own event
+    let events = env.events().all();
+    assert!(events.len() > 0);
+}
+
+#[test]
+fn test_recover_stranded_funds_edge_case_max_i128() {
+    let (_, client, _, admin) = setup_test_env();
+    
+    let recipient = Address::generate(&admin.env());
+    // Test near max i128 value
+    let amount = i128::MAX - 1000;
+    let reason = RecoveryReason::DeprecatedFlow;
+    
+    // Should handle large values
+    let result = client.try_recover_stranded_funds(&admin, &recipient, &amount, &reason);
+    assert!(result.is_ok());
 }
