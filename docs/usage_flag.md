@@ -12,6 +12,7 @@ The `usage_enabled` flag allows the SubscriptionVault contract to support two di
 2. **Usage-based billing** (`usage_enabled = true`): Charges based on metered consumption, with optional interval caps
 
 This flexibility enables merchants to offer different pricing models:
+
 - Fixed monthly subscriptions (interval-based only)
 - Pay-per-use services (usage-based only)
 - Hybrid models (base fee + usage charges)
@@ -33,7 +34,7 @@ pub struct Subscription {
 
 **Type**: `bool`  
 **Mutability**: Immutable after creation  
-**Default**: N/A (must be explicitly provided)  
+**Default**: N/A (must be explicitly provided)
 
 ## Semantics
 
@@ -42,18 +43,21 @@ pub struct Subscription {
 **Billing Model**: Pure interval-based billing
 
 **Behavior**:
+
 - Charges occur at fixed intervals defined by `interval_seconds`
 - Each charge is for the fixed `amount`
 - No metering or usage tracking
 - Predictable, recurring billing
 
 **Use Cases**:
+
 - Monthly SaaS subscriptions
 - Annual memberships
 - Fixed-price service plans
 - Predictable revenue models
 
 **Example**:
+
 ```rust
 // Netflix-style monthly subscription
 let id = client.create_subscription(
@@ -70,18 +74,21 @@ let id = client.create_subscription(
 **Billing Model**: Usage-based or hybrid billing
 
 **Behavior**:
+
 - Supports metering and tracking actual consumption
 - Can charge based on usage (e.g., API calls, data transfer, compute time)
 - May still use `interval_seconds` for billing cycles or usage resets
 - The `amount` field may represent a base fee or maximum cap
 
 **Use Cases**:
+
 - API services (pay per request)
 - Cloud infrastructure (pay for resources used)
 - Telecommunications (pay per minute/GB)
 - Hybrid models (base fee + overages)
 
 **Example**:
+
 ```rust
 // AWS-style usage-based billing
 let id = client.create_subscription(
@@ -111,6 +118,7 @@ pub fn create_subscription(
 ```
 
 **Requirements**:
+
 - Must be explicitly provided (no default)
 - Cannot be `None` or undefined
 - Boolean value: `true` or `false`
@@ -133,6 +141,7 @@ assert_eq!(subscription.usage_enabled, false);
 ```
 
 **Rationale**: Changing billing models mid-subscription could lead to:
+
 - Billing confusion and disputes
 - Incorrect charge calculations
 - Unclear subscriber expectations
@@ -144,15 +153,16 @@ assert_eq!(subscription.usage_enabled, false);
 
 The `usage_enabled` flag persists through all subscription state transitions:
 
-| State Transition | usage_enabled Behavior |
-|-----------------|------------------------|
-| Active → Paused | Preserved |
-| Paused → Active | Preserved |
-| Active → Cancelled | Preserved |
-| Active → InsufficientBalance | Preserved |
-| InsufficientBalance → Active | Preserved |
+| State Transition             | usage_enabled Behavior |
+| ---------------------------- | ---------------------- |
+| Active → Paused              | Preserved              |
+| Paused → Active              | Preserved              |
+| Active → Cancelled           | Preserved              |
+| Active → InsufficientBalance | Preserved              |
+| InsufficientBalance → Active | Preserved              |
 
 **Example**:
+
 ```rust
 // Create with usage enabled
 let id = client.create_subscription(..., &true);
@@ -174,18 +184,20 @@ assert_eq!(subscription.usage_enabled, true);  // Still true
 
 The relationship between `usage_enabled` and `interval_seconds` depends on the billing model:
 
-| usage_enabled | interval_seconds | Interpretation |
-|---------------|------------------|----------------|
-| false | > 0 | Fixed interval billing |
-| false | 0 | Immediate/on-demand billing |
-| true | > 0 | Usage billing with interval cycle |
-| true | 0 | Pure usage billing, no cycles |
+| usage_enabled | interval_seconds | Interpretation                    |
+| ------------- | ---------------- | --------------------------------- |
+| false         | > 0              | Fixed interval billing            |
+| false         | 0                | Immediate/on-demand billing       |
+| true          | > 0              | Usage billing with interval cycle |
+| true          | 0                | Pure usage billing, no cycles     |
 
 **Interval-based** (`usage_enabled = false`):
+
 - `interval_seconds` defines billing frequency
 - Charges occur every `interval_seconds`
 
 **Usage-based** (`usage_enabled = true`):
+
 - `interval_seconds` may define:
   - Billing cycle boundaries
   - Usage meter reset periods
@@ -196,10 +208,10 @@ The relationship between `usage_enabled` and `interval_seconds` depends on the b
 
 The `amount` field interpretation also varies:
 
-| usage_enabled | amount Interpretation |
-|---------------|----------------------|
-| false | Fixed charge per interval |
-| true | Base fee, cap, or tier threshold |
+| usage_enabled | amount Interpretation            |
+| ------------- | -------------------------------- |
+| false         | Fixed charge per interval        |
+| true          | Base fee, cap, or tier threshold |
 
 **Examples**:
 
@@ -254,18 +266,21 @@ The `usage_enabled` flag is designed to support future usage-based billing funct
 **As of now**, the `usage_enabled` flag is a **marker for future functionality**:
 
 ✅ **Implemented**:
+
 - Flag can be set during subscription creation
 - Flag is stored and persisted
 - Flag is immutable after creation
 - Flag survives state transitions
 
 ❌ **Not Yet Implemented**:
+
 - Actual usage metering
 - Usage-based charge calculations
 - Usage limits enforcement
 - Usage reporting
 
 **Current Behavior**:
+
 - Both `usage_enabled = true` and `usage_enabled = false` subscriptions behave identically
 - All subscriptions currently use interval-based billing regardless of the flag
 - The flag serves as a declaration of intent for future billing model
