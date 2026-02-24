@@ -29,7 +29,10 @@ pub struct InsufficientBalanceError {
 impl InsufficientBalanceError {
     /// Creates a new InsufficientBalanceError with the given available and required amounts.
     pub const fn new(available: i128, required: i128) -> Self {
-        Self { available, required }
+        Self {
+            available,
+            required,
+        }
     }
 
     /// Returns the shortfall amount (required - available).
